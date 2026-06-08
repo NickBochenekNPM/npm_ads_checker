@@ -1,0 +1,8 @@
+# Credentials — never bake into image layers
+service_account.json
+
+# Local dev artifacts
+.venv/
+__pycache__/
+*.pyc
+.idea/
