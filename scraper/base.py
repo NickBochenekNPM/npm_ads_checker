@@ -1,8 +1,13 @@
+import re
 import time
 import random
+import logging
+import requests
 from playwright.sync_api import sync_playwright, Browser, BrowserContext
 from config import Config, DatePreset
 from urllib.parse import urlparse
+
+log = logging.getLogger(__name__)
 
 def clean_domain(domain: str) -> str:
     """Strip protocol, www, and trailing slashes from a domain."""
@@ -39,6 +44,57 @@ def get_date_range_label() -> str:
         DatePreset.LAST_365: "Last 365 days",
     }
     return labels.get(Config.DATE_PRESET, "All time")
+
+
+def fetch_org_name(domain: str) -> str:
+    """
+    Fetch the homepage of a domain and extract the org name from
+    og:site_name (preferred) or <title> (fallback).
+    Returns empty string if nothing useful is found.
+    """
+    try:
+        response = requests.get(
+            f"https://{domain}",
+            timeout=10,
+            headers={"User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )},
+            allow_redirects=True,
+        )
+        html = response.text
+    except Exception as e:
+        log.warning("fetch_org_name: could not fetch %s — %s", domain, e)
+        return ""
+
+    # og:site_name — handles both attribute orderings
+    og = re.search(
+        r'<meta[^>]+property=["\']og:site_name["\'][^>]+content=["\']([^"\']+)["\']',
+        html, re.IGNORECASE,
+    ) or re.search(
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:site_name["\']',
+        html, re.IGNORECASE,
+    )
+    if og:
+        name = og.group(1).strip()
+        log.info("fetch_org_name: %s → '%s' (og:site_name)", domain, name)
+        return name
+
+    # <title> fallback — strip everything after the first separator
+    title = re.search(r'<title[^>]*>([^<]+)</title>', html, re.IGNORECASE)
+    if title:
+        name = title.group(1).strip()
+        for sep in (" | ", " - ", " :: ", " — "):
+            if sep in name:
+                name = name.split(sep)[0].strip()
+                break
+        if name:
+            log.info("fetch_org_name: %s → '%s' (title)", domain, name)
+            return name
+
+    log.warning("fetch_org_name: no usable name found for %s", domain)
+    return ""
 
 
 def polite_delay() -> None:

@@ -31,8 +31,15 @@ def scrape_domain(context: BrowserContext, domain: str, org_name: str) -> dict:
 
     try:
         url = build_search_url(domain)
-        page.goto(url, wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(5000)
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        # Wait for the Angular app to render ad results or a "no ads" indicator
+        try:
+            page.wait_for_selector(
+                ".ads-count-searchable, creative-preview, [data-creative-id]",
+                timeout=20000,
+            )
+        except PlaywrightTimeoutError:
+            pass  # may be a "no ads" page — fall through to the text check
 
         # ----------------------------------------------------------------
         # Step 1: Check for ads
@@ -59,7 +66,22 @@ def scrape_domain(context: BrowserContext, domain: str, org_name: str) -> dict:
         if ad_cards is None or ad_cards.count() == 0:
             return base_result
 
-        ad_count = ad_cards.count()
+        ad_count = 0
+        count_el = page.locator(".ads-count-searchable")
+        if count_el.count() > 0:
+            count_text = count_el.first.inner_text()  # e.g. "18 ads"
+            match = re.match(r"~?([\d,]+(?:\.\d+)?)\s*([KkMm]?)", count_text.strip())
+            if match:
+                number = float(match.group(1).replace(",", ""))
+                suffix = match.group(2).upper()
+                if suffix == "K":
+                    number *= 1_000
+                elif suffix == "M":
+                    number *= 1_000_000
+                ad_count = int(number)
+        if ad_count == 0:
+            ad_count = ad_cards.count()  # fallback to visible card count
+
         base_result["ads_running"] = "Yes"
         base_result["ad_count"] = ad_count
 
@@ -81,8 +103,7 @@ def scrape_domain(context: BrowserContext, domain: str, org_name: str) -> dict:
             # URL didn't change — try waiting for a detail element instead
             page.wait_for_timeout(3000)
 
-        page.wait_for_load_state("networkidle", timeout=30000)
-        page.wait_for_timeout(2000)
+        page.wait_for_load_state("domcontentloaded", timeout=30000)
 
         funded_by = extract_funded_by(page)
 

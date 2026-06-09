@@ -68,6 +68,10 @@ def write_output_rows(results: list[dict]) -> None:
         row = [
             r.get("domain", ""),
             r.get("org_name", ""),
+            r.get("ein", ""),
+            r.get("revenue", ""),
+            r.get("tax_year", ""),
+            r.get("form_990_url", ""),
             r.get("ads_running", ""),
             r.get("ad_count", ""),
             r.get("ad_funded_by", ""),

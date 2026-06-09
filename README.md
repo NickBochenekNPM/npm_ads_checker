@@ -16,7 +16,7 @@ ads_checker/
 │   ├── __init__.py
 │   ├── base.py              # Shared Playwright browser setup + URL builder
 │   ├── ads_transparency.py  # Ads Transparency Center scraper
-│   └── guidestar.py         # Stub — ready to implement later
+│   └── propublica.py        # ProPublica → EIN → Open990 revenue lookup
 ├── requirements.txt
 ├── Dockerfile
 └── README.md
@@ -118,6 +118,9 @@ Visit the Cloud Run URL + `/run`:
 | Domain | The domain checked |
 | Org name | From input sheet (if provided) |
 | Ads running | Yes / No / Error |
+| EIN | Employer Identification Number (from ProPublica) |
+| Revenue | Total revenue from most recent 990 filing (Open990) |
+| Tax year | Fiscal year of the revenue figure |
 | Ad count | Number of ads found |
 | Ad funded by | Raw text from disclosure (e.g. "Google Ad Grants") |
 | Funding type | Grant / Paid / None / Error |
@@ -129,13 +132,6 @@ Visit the Cloud Run URL + `/run`:
 - `Paid` — ads running + no disclosure (absence is significant)
 - `None` — no ads running
 - `Error` — scraper could not load the page
-
----
-
-## Adding GuideStar support later
-
-See `scraper/guidestar.py` — the stub is ready.
-Steps are documented at the top of that file.
 
 ---
 

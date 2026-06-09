@@ -40,6 +40,10 @@ class Config:
     OUTPUT_COLUMNS = [
         "Domain",
         "Org name",
+        "EIN",
+        "Revenue",
+        "Tax year",
+        "Form 990",
         "Ads running",
         "Ad count",
         "Ad funded by",
@@ -47,8 +51,3 @@ class Config:
         "Date range",
         "Date checked",
     ]
-
-    # --- GuideStar (reserved for future use) ---
-    GUIDESTAR_ENABLED = False
-    GUIDESTAR_EMAIL = os.environ.get("GUIDESTAR_EMAIL", "")
-    GUIDESTAR_PASSWORD = os.environ.get("GUIDESTAR_PASSWORD", "")
