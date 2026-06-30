@@ -66,12 +66,12 @@ def _result_to_row(r: dict) -> list:
 
 
 def write_output_header() -> None:
-    """Clear the Output tab and write just the header row, ready for tasks to append into."""
+    """Write the header row to the Output tab only if the sheet is empty."""
     client = get_client()
     sheet = client.open_by_key(Config.SPREADSHEET_ID)
     worksheet = _get_or_create_output_worksheet(sheet)
-    worksheet.clear()
-    worksheet.append_row(Config.OUTPUT_COLUMNS)
+    if not worksheet.get_all_values():
+        worksheet.append_row(Config.OUTPUT_COLUMNS)
 
 
 def append_output_row(result: dict) -> None:
