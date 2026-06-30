@@ -36,6 +36,15 @@ class Config:
         "GOOGLE_APPLICATION_CREDENTIALS", "service_account.json"
     )
 
+    # --- Cloud Tasks ---
+    GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "")
+    CLOUD_TASKS_LOCATION = os.environ.get("CLOUD_TASKS_LOCATION", "us-central1")
+    CLOUD_TASKS_QUEUE = os.environ.get("CLOUD_TASKS_QUEUE", "ads-checker")
+    # Full HTTPS URL of this Cloud Run service, e.g. https://ads-checker-xyz-uc.a.run.app
+    CLOUD_RUN_SERVICE_URL = os.environ.get("CLOUD_RUN_SERVICE_URL", "")
+    # Service account email that Cloud Tasks uses to sign OIDC tokens for /process
+    CLOUD_TASKS_SERVICE_ACCOUNT = os.environ.get("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+
     # --- Output column order ---
     OUTPUT_COLUMNS = [
         "Domain",

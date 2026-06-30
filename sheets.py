@@ -1,6 +1,6 @@
 import gspread
+import google.auth
 from datetime import date
-from google.oauth2.service_account import Credentials
 from config import Config
 
 SCOPES = [
@@ -10,9 +10,9 @@ SCOPES = [
 
 
 def get_client() -> gspread.Client:
-    creds = Credentials.from_service_account_file(
-        Config.SERVICE_ACCOUNT_FILE, scopes=SCOPES
-    )
+    # On Cloud Run, ADC uses the runtime service account automatically.
+    # Locally, set GOOGLE_APPLICATION_CREDENTIALS to your service_account.json path.
+    creds, _ = google.auth.default(scopes=SCOPES)
     return gspread.authorize(creds)
 
 
@@ -41,44 +41,42 @@ def read_input_rows() -> list[dict]:
     return results
 
 
-def write_output_rows(results: list[dict]) -> None:
-    """
-    Write scrape results to the Output tab.
-    Clears existing content, writes a fresh header, then all result rows.
-    """
+def _get_or_create_output_worksheet(sheet):
+    try:
+        return sheet.worksheet(Config.OUTPUT_TAB_NAME)
+    except gspread.WorksheetNotFound:
+        return sheet.add_worksheet(title=Config.OUTPUT_TAB_NAME, rows=1000, cols=20)
+
+
+def _result_to_row(r: dict) -> list:
+    return [
+        r.get("domain", ""),
+        r.get("org_name", ""),
+        r.get("ein", ""),
+        r.get("revenue", ""),
+        r.get("tax_year", ""),
+        r.get("form_990_url", ""),
+        r.get("ads_running", ""),
+        r.get("ad_count", ""),
+        r.get("ad_funded_by", ""),
+        r.get("funding_type", ""),
+        r.get("date_range", ""),
+        r.get("date_checked", str(date.today())),
+    ]
+
+
+def write_output_header() -> None:
+    """Clear the Output tab and write just the header row, ready for tasks to append into."""
     client = get_client()
     sheet = client.open_by_key(Config.SPREADSHEET_ID)
-
-    # Get or create the Output tab
-    try:
-        worksheet = sheet.worksheet(Config.OUTPUT_TAB_NAME)
-    except gspread.WorksheetNotFound:
-        worksheet = sheet.add_worksheet(
-            title=Config.OUTPUT_TAB_NAME, rows=1000, cols=20
-        )
-
+    worksheet = _get_or_create_output_worksheet(sheet)
     worksheet.clear()
+    worksheet.append_row(Config.OUTPUT_COLUMNS)
 
-    # Write header
-    header = Config.OUTPUT_COLUMNS
-    all_rows = [header]
 
-    # Write data rows
-    for r in results:
-        row = [
-            r.get("domain", ""),
-            r.get("org_name", ""),
-            r.get("ein", ""),
-            r.get("revenue", ""),
-            r.get("tax_year", ""),
-            r.get("form_990_url", ""),
-            r.get("ads_running", ""),
-            r.get("ad_count", ""),
-            r.get("ad_funded_by", ""),
-            r.get("funding_type", ""),
-            r.get("date_range", ""),
-            r.get("date_checked", str(date.today())),
-        ]
-        all_rows.append(row)
-
-    worksheet.update(all_rows, "A1")
+def append_output_row(result: dict) -> None:
+    """Append a single result row to the Output tab. Safe to call concurrently."""
+    client = get_client()
+    sheet = client.open_by_key(Config.SPREADSHEET_ID)
+    worksheet = sheet.worksheet(Config.OUTPUT_TAB_NAME)
+    worksheet.append_row(_result_to_row(result))

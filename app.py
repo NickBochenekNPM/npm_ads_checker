@@ -1,10 +1,12 @@
-import concurrent.futures
+import json
 import logging
-from flask import Flask, jsonify
-from scraper.base import BrowserManager, polite_delay, fetch_org_name
+from flask import Flask, jsonify, request
+from google.cloud import tasks_v2
+from scraper.base import BrowserManager, fetch_org_name
 from scraper.ads_transparency import scrape_domain
 from scraper.propublica import lookup_org
-from sheets import read_input_rows, write_output_rows
+from sheets import read_input_rows, write_output_header, append_output_row
+from config import Config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,14 +21,8 @@ app = Flask(__name__)
 @app.route("/run", methods=["GET"])
 def run():
     """
-    Main trigger endpoint.
-    Coworkers visit /run in their browser to kick off a scrape.
-
-    Flow:
-    1. Read domains from the Input sheet
-    2. Scrape each domain (Ads Transparency Center)
-    3. Write results to the Output sheet
-    4. Return a summary JSON response
+    Dispatcher endpoint — reads the Input sheet, resets the Output sheet header,
+    and enqueues one Cloud Task per domain. Returns immediately.
     """
     log.info("Run triggered")
 
@@ -37,86 +33,91 @@ def run():
         return jsonify({"status": "error", "message": f"Could not read sheet: {e}"}), 500
 
     if not rows:
-        log.warning("No domains found in Input sheet")
         return jsonify({"status": "error", "message": "No domains found in Input sheet."}), 400
 
-    log.info("Loaded %d domain(s) from Input sheet", len(rows))
-    results = []
+    try:
+        write_output_header()
+    except Exception as e:
+        log.error("Could not initialize Output sheet: %s", e)
+        return jsonify({"status": "error", "message": f"Could not initialize Output sheet: {e}"}), 500
+
+    tasks_client = tasks_v2.CloudTasksClient()
+    queue_path = tasks_client.queue_path(
+        Config.GCP_PROJECT_ID,
+        Config.CLOUD_TASKS_LOCATION,
+        Config.CLOUD_TASKS_QUEUE,
+    )
+
+    enqueued = 0
+    for row in rows:
+        payload = json.dumps({"domain": row["domain"], "org_name": row["org_name"]}).encode()
+        task = {
+            "http_request": {
+                "http_method": tasks_v2.HttpMethod.POST,
+                "url": f"{Config.CLOUD_RUN_SERVICE_URL}/process",
+                "headers": {"Content-Type": "application/json"},
+                "body": payload,
+                "oidc_token": {"service_account_email": Config.CLOUD_TASKS_SERVICE_ACCOUNT},
+            }
+        }
+        tasks_client.create_task(parent=queue_path, task=task)
+        enqueued += 1
+
+    log.info("Enqueued %d task(s)", enqueued)
+    return jsonify({"status": "ok", "enqueued": enqueued})
+
+
+@app.route("/process", methods=["POST"])
+def process():
+    """
+    Worker endpoint called by Cloud Tasks — processes one domain.
+    Cloud Tasks sends an OIDC token; restrict this route to Cloud Run invokers only via IAM.
+    The X-CloudTasks-QueueName header provides a secondary guard against accidental direct calls.
+    """
+    if not request.headers.get("X-CloudTasks-QueueName"):
+        return jsonify({"status": "error", "message": "Forbidden"}), 403
+
+    data = request.get_json(force=True)
+    domain = (data.get("domain") or "").strip()
+    org_name = (data.get("org_name") or "").strip()
+
+    if not domain:
+        return jsonify({"status": "error", "message": "Missing domain"}), 400
+
+    log.info("Processing: %s", domain)
 
     with BrowserManager() as manager:
-        for i, row in enumerate(rows, start=1):
-            domain = row["domain"]
-            org_name = row["org_name"]
-            log.info("[%d/%d] Scraping ads: %s", i, len(rows), domain)
+        context = manager.new_context()
+        try:
+            result = scrape_domain(context=context, domain=domain, org_name=org_name)
+        finally:
+            context.close()
 
-            context = manager.new_context()
-            try:
-                result = scrape_domain(
-                    context=context,
-                    domain=domain,
-                    org_name=org_name,
-                )
-            finally:
-                context.close()
+    if not org_name:
+        org_name = fetch_org_name(result["domain"])
 
-            log.info("[%d/%d] Ads result: %s (funding: %s)", i, len(rows), result["ads_running"], result["funding_type"])
-
-            if not org_name:
-                org_name = fetch_org_name(result["domain"])
-
-            log.info("[%d/%d] Looking up financials: %s", i, len(rows), org_name or "(no name found)")
-            try:
-                propublica_data = lookup_org(org_name)
-            except Exception as e:
-                log.warning("[%d/%d] ProPublica lookup failed for '%s': %s", i, len(rows), org_name, e)
-                propublica_data = {"ein": "", "revenue": "Error", "tax_year": ""}
-
-            log.info("[%d/%d] Financials: EIN=%s revenue=%s (%s)", i, len(rows), propublica_data.get("ein"), propublica_data.get("revenue"), propublica_data.get("tax_year"))
-
-            result.update(propublica_data)
-            results.append(result)
-            polite_delay()  # pause between domains
-
-    log.info("Scraping complete. Writing %d row(s) to Output sheet", len(results))
     try:
-        write_output_rows(results)
+        propublica_data = lookup_org(org_name)
     except Exception as e:
-        log.error("Could not write to Output sheet: %s", e)
-        return jsonify({
-            "status": "error",
-            "message": f"Scrape completed but could not write to sheet: {e}",
-            "results": results,
-        }), 500
+        log.warning("ProPublica lookup failed for '%s': %s", org_name, e)
+        propublica_data = {"ein": "", "revenue": "Error", "tax_year": ""}
 
-    # Build a plain-English summary
-    ads_running = [r for r in results if r["ads_running"] == "Yes"]
-    paid = [r for r in ads_running if r["funding_type"] == "Paid"]
-    grant = [r for r in ads_running if r["funding_type"] == "Grant"]
-    errors = [r for r in results if "Error" in str(r.get("ads_running", ""))]
+    result.update(propublica_data)
 
-    log.info("Done. total=%d ads_running=%d paid=%d grant=%d errors=%d",
-             len(results), len(ads_running), len(paid), len(grant), len(errors))
+    try:
+        append_output_row(result)
+    except Exception as e:
+        log.error("Could not append row for %s: %s", domain, e)
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-    return jsonify({
-        "status": "success",
-        "summary": {
-            "total_checked": len(results),
-            "ads_running": len(ads_running),
-            "paid_ads": len(paid),
-            "grant_funded": len(grant),
-            "no_ads": len(results) - len(ads_running),
-            "errors": len(errors),
-        },
-        "results": results,
-    })
+    log.info("Done: %s (ads: %s, funding: %s)", domain, result["ads_running"], result["funding_type"])
+    return jsonify({"status": "ok", "domain": domain, "ads_running": result["ads_running"], "funding_type": result["funding_type"]})
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Simple health check — confirms the app is running."""
     return jsonify({"status": "ok"})
 
 
 if __name__ == "__main__":
-    # Local development only — Cloud Run uses gunicorn
     app.run(host="0.0.0.0", port=8080, debug=True)

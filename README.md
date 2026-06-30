@@ -3,6 +3,8 @@
 Checks the Google Ads Transparency Center for a list of domains and writes
 results to a Google Sheet. Deployed on Google Cloud Run.
 
+Project ID: central-search-harmony
+
 ---
 
 ## Project structure
@@ -77,37 +79,100 @@ Then visit: `http://localhost:8080/run`
 
 ## Cloud Run deployment
 
-### 1. Set environment variables in Cloud Run
+### 1. Create the Cloud Tasks queue
 
-| Variable | Value |
+```bash
+gcloud tasks queues create ads-checker --location=us-central1
+```
+
+### 2. Set environment variables in Cloud Run
+
+| Variable | Description |
 |---|---|
 | `SPREADSHEET_ID` | Your Google Sheet ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to service account JSON (or use Workload Identity) |
+| `GCP_PROJECT_ID` | Your GCP project ID |
+| `CLOUD_RUN_SERVICE_URL` | Full HTTPS URL of this Cloud Run service (e.g. `https://ads-checker-xyz-uc.a.run.app`) |
+| `CLOUD_TASKS_SERVICE_ACCOUNT` | Service account email Cloud Tasks uses to call `/process` (e.g. `ads-checker@project.iam.gserviceaccount.com`) |
+| `CLOUD_TASKS_QUEUE` | Queue name (default: `ads-checker`) |
+| `CLOUD_TASKS_LOCATION` | Queue region (default: `us-central1`) |
 
-### 2. Build and deploy
+### 3. Initial deploy
+
+The first deploy is two steps because the service URL isn't known until after the
+first deployment.
 
 ```bash
 # Authenticate
 gcloud auth login
-gcloud config set project YOUR_PROJECT_ID
+gcloud config set project central-search-harmony
 
 # Build and push container
-gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/ads-checker
+gcloud builds submit --tag gcr.io/central-search-harmony/ads-checker
 
-# Deploy to Cloud Run
+# Deploy (CLOUD_RUN_SERVICE_URL added in the next step)
 gcloud run deploy ads-checker \
-  --image gcr.io/YOUR_PROJECT_ID/ads-checker \
+  --image gcr.io/central-search-harmony/ads-checker \
   --platform managed \
   --region us-central1 \
   --timeout 300 \
   --memory 2Gi \
-  --allow-unauthenticated
+  --allow-unauthenticated \
+  --service-account=sheet-writer@central-search-harmony.iam.gserviceaccount.com \
+  --set-env-vars="GCP_PROJECT_ID=central-search-harmony,\
+CLOUD_RUN_SERVICE_URL=https://ads-checker-127286750848.us-central1.run.app,\
+CLOUD_TASKS_SERVICE_ACCOUNT=sheet-writer@central-search-harmony.iam.gserviceaccount.com,\
+SPREADSHEET_ID=1eSozbeuS1vO92IlTNk2ZfQVPvd8-LJNG_HXhyCTjuRY"
 ```
 
-### 3. Trigger a run
+### 4. Grant Cloud Tasks permission to invoke the service
+
+```bash
+gcloud run services add-iam-policy-binding ads-checker \
+  --region=us-central1 \
+  --member="serviceAccount:sheet-writer@central-search-harmony.iam.gserviceaccount.com" \
+  --role="roles/run.invoker"
+```
+
+### 5. Redeploy (future updates)
+
+```bash
+gcloud builds submit --tag gcr.io/central-search-harmony/ads-checker && \
+gcloud run deploy ads-checker \
+  --image gcr.io/central-search-harmony/ads-checker \
+  --platform managed \
+  --region us-central1 \
+  --timeout 300 \
+  --memory 2Gi \
+  --allow-unauthenticated \
+  --service-account=sheet-writer@central-search-harmony.iam.gserviceaccount.com \
+  --set-env-vars="GCP_PROJECT_ID=central-search-harmony,\
+CLOUD_RUN_SERVICE_URL=https://ads-checker-127286750848.us-central1.run.app,\
+CLOUD_TASKS_SERVICE_ACCOUNT=sheet-writer@central-search-harmony.iam.gserviceaccount.com,\
+SPREADSHEET_ID=1eSozbeuS1vO92IlTNk2ZfQVPvd8-LJNG_HXhyCTjuRY"
+```
+
+### 6. Trigger a run
 
 Visit the Cloud Run URL + `/run`:
 `https://your-service-url.run.app/run`
+
+This returns immediately with `{"status": "ok", "enqueued": N}`. Each domain is
+processed in the background by Cloud Tasks — results appear in the Output sheet
+as tasks complete.
+
+---
+
+## Google Sheet menu
+
+A custom **Ads Checker** menu can be added to the Sheet so anyone can trigger a run without touching the Cloud Run URL.
+
+1. In the Google Sheet, go to **Extensions → Apps Script**
+2. Delete any placeholder code and paste in the contents of `scripts/sheet_menu.gs`
+3. Click **Save**, then close the tab and reload the Sheet
+4. An **Ads Checker** menu will appear in the menu bar with a **Run check** option
+
+Clicking **Run check** calls `/run` and shows a confirmation dialog with the number of domains enqueued.
 
 ---
 
