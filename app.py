@@ -5,7 +5,7 @@ from google.cloud import tasks_v2
 from scraper.base import BrowserManager, fetch_org_name
 from scraper.ads_transparency import scrape_domain
 from scraper.propublica import lookup_org
-from sheets import read_input_rows, write_output_header, append_output_row
+from sheets import read_input_rows, write_output_header, append_output_row, initialize_user
 from config import Config
 
 logging.basicConfig(
@@ -18,25 +18,53 @@ log = logging.getLogger(__name__)
 app = Flask(__name__)
 
 
+@app.route("/init", methods=["GET"])
+def init():
+    """
+    One-time setup endpoint — creates `user`'s Input/Output tab pair if they
+    don't already exist. Safe to call more than once.
+    """
+    user = (request.args.get("user") or "").strip()
+    if not user:
+        return jsonify({"status": "error", "message": "Missing required 'user' query parameter."}), 400
+
+    try:
+        created = initialize_user(user)
+    except Exception as e:
+        log.error("Could not initialize workspace for %s: %s", user, e)
+        return jsonify({"status": "error", "message": f"Could not initialize workspace: {e}"}), 500
+
+    message = (
+        f"Created workspace for {user}." if created
+        else f"Workspace for {user} already existed."
+    )
+    log.info(message)
+    return jsonify({"status": "ok", "created": created, "message": message})
+
+
 @app.route("/run", methods=["GET"])
 def run():
     """
-    Dispatcher endpoint — reads the Input sheet, resets the Output sheet header,
-    and enqueues one Cloud Task per domain. Returns immediately.
+    Dispatcher endpoint — reads `user`'s own Input tab, ensures `user`'s Output
+    tab exists, and enqueues one Cloud Task per domain. Returns immediately.
     """
-    log.info("Run triggered")
+    user = (request.args.get("user") or "").strip()
+    if not user:
+        return jsonify({"status": "error", "message": "Missing required 'user' query parameter."}), 400
+
+    log.info("Run triggered for user=%s", user)
 
     try:
-        rows = read_input_rows()
+        rows = read_input_rows(user)
     except Exception as e:
         log.error("Could not read input sheet: %s", e)
         return jsonify({"status": "error", "message": f"Could not read sheet: {e}"}), 500
 
     if not rows:
-        return jsonify({"status": "error", "message": "No domains found in Input sheet."}), 400
+        return jsonify({"status": "error", "message": f"No domains found in {Config.input_tab_name(user)}."}), 400
 
     try:
-        write_output_header()
+        write_output_header(user)
     except Exception as e:
         log.error("Could not initialize Output sheet: %s", e)
         return jsonify({"status": "error", "message": f"Could not initialize Output sheet: {e}"}), 500
@@ -50,7 +78,7 @@ def run():
 
     enqueued = 0
     for row in rows:
-        payload = json.dumps({"domain": row["domain"], "org_name": row["org_name"]}).encode()
+        payload = json.dumps({"domain": row["domain"], "org_name": row["org_name"], "user": user}).encode()
         task = {
             "http_request": {
                 "http_method": tasks_v2.HttpMethod.POST,
@@ -80,9 +108,12 @@ def process():
     data = request.get_json(force=True)
     domain = (data.get("domain") or "").strip()
     org_name = (data.get("org_name") or "").strip()
+    user = (data.get("user") or "").strip()
 
     if not domain:
         return jsonify({"status": "error", "message": "Missing domain"}), 400
+    if not user:
+        return jsonify({"status": "error", "message": "Missing user"}), 400
 
     log.info("Processing: %s", domain)
 
@@ -105,7 +136,7 @@ def process():
     result.update(propublica_data)
 
     try:
-        append_output_row(result)
+        append_output_row(user, result)
     except Exception as e:
         log.error("Could not append row for %s: %s", domain, e)
         return jsonify({"status": "error", "message": str(e)}), 500

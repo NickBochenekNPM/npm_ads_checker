@@ -26,8 +26,18 @@ class Config:
     # --- Google Sheets ---
     # Set via environment variable or hardcode for local dev
     SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1eSozbeuS1vO92IlTNk2ZfQVPvd8-LJNG_HXhyCTjuRY")
-    INPUT_TAB_NAME = "Input"
-    OUTPUT_TAB_NAME = "Output"
+
+    # --- Per-user workspaces ---
+    # Each user gets their own "<user> - Ads Checker Input" / "<user> - Ads
+    # Checker Output" tab pair in the shared spreadsheet, e.g.
+    # "Kristen - Ads Checker Input", "Kristen - Ads Checker Output".
+    @staticmethod
+    def input_tab_name(user: str) -> str:
+        return f"{user} - Ads Checker Input"
+
+    @staticmethod
+    def output_tab_name(user: str) -> str:
+        return f"{user} - Ads Checker Output"
 
     # --- Google Service Account ---
     # Path to your service account JSON file (local dev)
@@ -44,6 +54,9 @@ class Config:
     CLOUD_RUN_SERVICE_URL = os.environ.get("CLOUD_RUN_SERVICE_URL", "")
     # Service account email that Cloud Tasks uses to sign OIDC tokens for /process
     CLOUD_TASKS_SERVICE_ACCOUNT = os.environ.get("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+
+    # --- Input column order ---
+    INPUT_COLUMNS = ["Domain", "Org name"]
 
     # --- Output column order ---
     OUTPUT_COLUMNS = [

@@ -54,10 +54,20 @@ SPREADSHEET_ID = "your-spreadsheet-id-here"
 The ID is the long string in your sheet's URL:
 `https://docs.google.com/spreadsheets/d/THIS_PART_HERE/edit`
 
-Your Input sheet should have:
-- **Column A**: Domain (e.g. `hillel.org`)
-- **Column B**: Org name (optional, e.g. `Hillel International`)
-- **Row 1**: Header row (e.g. `Domain`, `Org name`) — skipped automatically
+Each person who uses the tool works out of their own tab pair in the shared
+spreadsheet: **`<name> - Ads Checker Input`** and **`<name> - Ads Checker
+Output`** (e.g. `Kristen - Ads Checker Input`, `Kristen - Ads Checker Output`
+— the naming is set in `config.py` via `Config.input_tab_name()` /
+`Config.output_tab_name()`). This keeps everyone's domains and results in
+separate workspaces without any risk of one person's run reading or
+overwriting another's data.
+
+To onboard a new person, call `/init?user=<name>` once (or use the **Set up
+new workspace** menu item — see below) — this creates both
+`<name> - Ads Checker Input` and `<name> - Ads Checker Output`, with header
+rows already in place, ready for domains to be added to Column A (and
+optionally an org name in Column B). It's safe to call more than once; it
+does nothing if the tabs already exist.
 
 ### 4. Adjust settings (optional)
 
@@ -73,7 +83,8 @@ REGION = "US"                        # or "GB", "CA", etc.
 python app.py
 ```
 
-Then visit: `http://localhost:8080/run`
+Then visit: `http://localhost:8080/run?user=Kristen` (substitute the name whose
+`<name> - Ads Checker Input` tab you want to process)
 
 ---
 
@@ -152,31 +163,70 @@ CLOUD_TASKS_SERVICE_ACCOUNT=sheet-writer@central-search-harmony.iam.gserviceacco
 SPREADSHEET_ID=1eSozbeuS1vO92IlTNk2ZfQVPvd8-LJNG_HXhyCTjuRY"
 ```
 
-### 6. Trigger a run
+### 6. Onboard a person, then trigger a run
 
-Visit the Cloud Run URL + `/run`:
-`https://your-service-url.run.app/run`
+First, set up their workspace (one time only):
+`https://your-service-url.run.app/init?user=Kristen`
 
-This returns immediately with `{"status": "ok", "enqueued": N}`. Each domain is
-processed in the background by Cloud Tasks — results appear in the Output sheet
-as tasks complete.
+This creates `Kristen - Ads Checker Input` and `Kristen - Ads Checker Output`
+if they don't already exist, and is safe to call again later — it's a no-op
+if both tabs are already there.
+
+Then, whenever they want to trigger a run, visit `/run` with the same `user`:
+`https://your-service-url.run.app/run?user=Kristen`
+
+This returns immediately with `{"status": "ok", "enqueued": N}`, where N is the
+count of domains in `Kristen - Ads Checker Input`. Each domain is processed in
+the background by Cloud Tasks — results appear in `Kristen - Ads Checker
+Output` as tasks complete.
 
 ---
 
 ## Google Sheet menu
 
-A custom **Ads Checker** menu can be added to the Sheet so anyone can trigger a run without touching the Cloud Run URL.
+A custom menu can be added to the Sheet so anyone can trigger a run without touching the Cloud Run URL.
 
 1. In the Google Sheet, go to **Extensions → Apps Script**
-2. Delete any placeholder code and paste in the contents of `scripts/sheet_menu.gs`
-3. Click **Save**, then close the tab and reload the Sheet
-4. An **Ads Checker** menu will appear in the menu bar with a **Run check** option
+2. Add `scripts/sheet_menu.gs` as a file in the project — it defines
+   `runAdsCheck` and `initWorkspace`, but deliberately does **not** define
+   `onOpen()`
+3. Make sure exactly one file in the project defines `onOpen()` and wires up
+   menu items for these functions (Apps Script shares one global scope per
+   project, so a second `onOpen()` would silently overwrite the first and its
+   menu would never appear). If this is the only tool on the sheet, that can
+   be as simple as:
+   ```js
+   function onOpen() {
+     SpreadsheetApp.getUi()
+       .createMenu('Ads Checker')
+       .addItem('Run check', 'runAdsCheck')
+       .addItem('Set up new workspace', 'initWorkspace')
+       .addToUi();
+   }
+   ```
+   If the sheet already has other tools with their own menu items, add these
+   two items into that existing `onOpen()` instead.
+4. Click **Save**, then close the tab and reload the Sheet
 
-Clicking **Run check** calls `/run` and shows a confirmation dialog with the number of domains enqueued.
+**Set up new workspace** prompts for a name and calls `/init?user=<name>`,
+creating that person's tab pair if it doesn't exist yet — do this once per
+new person before they use **Run check** for the first time.
+
+**Run check** doesn't ask who you are — it looks at whichever tab is
+currently active (`SpreadsheetApp.getActiveSheet()`) and derives the
+workspace name from it, e.g. selecting the `Kristen - Ads Checker Input` tab
+and clicking **Run check** runs `/run?user=Kristen`. This means the person
+running it never has to type or remember anything, and it can never run
+against the wrong workspace by accident — it always matches whatever tab
+you're looking at. If the active tab isn't one of the Ads Checker tabs, it
+tells you to select the right one first instead of guessing.
 
 ---
 
 ## Output sheet columns
+
+Each of these appears once per person, in their own `<name> - Ads Checker
+Output` tab.
 
 | Column | Description |
 |---|---|
