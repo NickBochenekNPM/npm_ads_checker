@@ -1,6 +1,9 @@
 import gspread
 import google.auth
 from datetime import date
+from functools import lru_cache
+from gspread.http_client import BackOffHTTPClient
+from gspread.utils import absolute_range_name
 from config import Config
 
 SCOPES = [
@@ -9,11 +12,20 @@ SCOPES = [
 ]
 
 
+@lru_cache(maxsize=1)
 def get_client() -> gspread.Client:
     # On Cloud Run, ADC uses the runtime service account automatically.
     # Locally, set GOOGLE_APPLICATION_CREDENTIALS to your service_account.json path.
+    # BackOffHTTPClient retries 429 quota errors with exponential backoff.
     creds, _ = google.auth.default(scopes=SCOPES)
-    return gspread.authorize(creds)
+    return gspread.authorize(creds, http_client=BackOffHTTPClient)
+
+
+@lru_cache(maxsize=1)
+def _get_spreadsheet() -> gspread.Spreadsheet:
+    # Opening a spreadsheet costs a read request; do it once per instance
+    # since every Cloud Tasks worker shares the same per-user read quota.
+    return get_client().open_by_key(Config.SPREADSHEET_ID)
 
 
 def read_input_rows(user: str) -> list[dict]:
@@ -24,8 +36,7 @@ def read_input_rows(user: str) -> list[dict]:
     Returns a list of dicts with keys 'domain' and 'org_name'.
     Skips empty rows and the header row.
     """
-    client = get_client()
-    sheet = client.open_by_key(Config.SPREADSHEET_ID)
+    sheet = _get_spreadsheet()
     worksheet = sheet.worksheet(Config.input_tab_name(user))
     rows = worksheet.get_all_values()
 
@@ -63,8 +74,7 @@ def initialize_user(user: str) -> bool:
     Safe to call more than once. Returns True if either tab was newly
     created, False if both already existed.
     """
-    client = get_client()
-    sheet = client.open_by_key(Config.SPREADSHEET_ID)
+    sheet = _get_spreadsheet()
 
     created = False
 
@@ -100,16 +110,20 @@ def _result_to_row(r: dict) -> list:
 
 def write_output_header(user: str) -> None:
     """Write the header row to `user`'s Output tab only if it's empty."""
-    client = get_client()
-    sheet = client.open_by_key(Config.SPREADSHEET_ID)
+    sheet = _get_spreadsheet()
     worksheet = _get_or_create_output_worksheet(sheet, user)
     if not any(worksheet.get_all_values()):
         worksheet.append_row(Config.OUTPUT_COLUMNS)
 
 
 def append_output_row(user: str, result: dict) -> None:
-    """Append a single result row to `user`'s Output tab. Safe to call concurrently."""
-    client = get_client()
-    sheet = client.open_by_key(Config.SPREADSHEET_ID)
-    worksheet = sheet.worksheet(Config.output_tab_name(user))
-    worksheet.append_row(_result_to_row(result))
+    """
+    Append a single result row to `user`'s Output tab. Safe to call concurrently.
+    Appends by range name so it makes no read requests (the Output tab is
+    created by /run before any tasks are enqueued).
+    """
+    _get_spreadsheet().values_append(
+        absolute_range_name(Config.output_tab_name(user)),
+        params={"valueInputOption": "RAW"},
+        body={"values": [_result_to_row(result)]},
+    )
