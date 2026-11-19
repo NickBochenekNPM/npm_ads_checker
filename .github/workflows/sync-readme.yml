@@ -1,0 +1,49 @@
+# Copies README.md into the "Ads Checker — README" Google Doc whenever it changes on
+# main, so the team can read it in Drive without opening GitHub:
+#   https://docs.google.com/document/d/1PZNOhckXx9VuvouGtJ1Z6ETOcKmwMYPqOtZ1eE5pC9k/edit
+#
+# Signs in to Google as readme-sync@central-search-harmony.iam.gserviceaccount.com
+# through workload identity federation (pool "github", provider
+# "github-actions"), so no key is stored anywhere. That account's only access is
+# Editor on the two README Docs.
+name: Sync README to Google Doc
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - README.md
+      - .github/scripts/sync_readme_to_doc.py
+      - .github/workflows/sync-readme.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # lets the job request the GitHub OIDC token Google exchanges
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/127286750848/locations/global/workloadIdentityPools/github/providers/github-actions
+          service_account: readme-sync@central-search-harmony.iam.gserviceaccount.com
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/drive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install markdown==3.7
+
+      - name: Copy README.md into the Google Doc
+        run: python .github/scripts/sync_readme_to_doc.py
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          DOC_ID: 1PZNOhckXx9VuvouGtJ1Z6ETOcKmwMYPqOtZ1eE5pC9k
